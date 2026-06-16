@@ -12,6 +12,7 @@
 
 const express = require("express");
 const path = require("path");
+const crypto = require("crypto");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -26,6 +27,46 @@ const GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta";
 
 app.use(express.json({ limit: "2mb" }));
 app.use(express.static(path.join(__dirname, "public")));
+
+/* ============================================================
+ *  OCHRONA HASŁEM (opcjonalna)
+ * ------------------------------------------------------------
+ *  Włącza się TYLKO, gdy ustawisz zmienną środowiskową APP_PASSWORD.
+ *  Bez niej aplikacja działa jak dotychczas (bez logowania).
+ *  Token wyprowadzany jest z hasła, więc jest stabilny po restarcie
+ *  i nie da się go zgadnąć bez znajomości hasła.
+ * ============================================================ */
+
+const APP_PASSWORD = process.env.APP_PASSWORD || "";
+const AUTH_REQUIRED = APP_PASSWORD.length > 0;
+const APP_TOKEN = AUTH_REQUIRED
+  ? crypto.createHash("sha256").update("leadscrape::" + APP_PASSWORD).digest("hex")
+  : "";
+
+function safeEqual(a, b) {
+  const bufA = Buffer.from(String(a));
+  const bufB = Buffer.from(String(b));
+  return bufA.length === bufB.length && crypto.timingSafeEqual(bufA, bufB);
+}
+
+function requireAuth(req, res, next) {
+  if (!AUTH_REQUIRED) return next();
+  if (safeEqual(req.header("x-app-token") || "", APP_TOKEN)) return next();
+  return res.status(401).json({ error: "Wymagane logowanie." });
+}
+
+// Logowanie: sprawdza hasło i zwraca token dostępu.
+app.post("/api/login", (req, res) => {
+  if (!AUTH_REQUIRED) return res.json({ token: "", authRequired: false });
+  const password = (req.body && req.body.password) || "";
+  if (!safeEqual(password, APP_PASSWORD)) {
+    return res.status(401).json({ error: "Nieprawidłowe hasło." });
+  }
+  return res.json({ token: APP_TOKEN, authRequired: true });
+});
+
+// Bramka na chronione endpointy (scraping + analiza AI).
+app.use(["/api/scrape", "/api/analyze"], requireAuth);
 
 /* ============================================================
  *  LOGIKA BIZNESOWA — czyszczenie i normalizacja leada
@@ -343,7 +384,7 @@ app.post("/api/analyze", async (req, res) => {
 
 /* ============================================================ */
 
-app.get("/api/health", (_req, res) => res.json({ ok: true, model: GEMINI_MODEL, actor: APIFY_ACTOR_ID }));
+app.get("/api/health", (_req, res) => res.json({ ok: true, model: GEMINI_MODEL, actor: APIFY_ACTOR_ID, authRequired: AUTH_REQUIRED }));
 
 // Domyślnie nasłuch na "::" = IPv6 (dual-stack łapie też IPv4) — wymagane przez subdomeny mikr.us.
 // Gdyby IPv6 było niedostępne, automatycznie przełączamy się na IPv4 (0.0.0.0).

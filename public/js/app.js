@@ -9,6 +9,7 @@ const LS = {
   apify: "leadscrape_apify_token",
   gemini: "leadscrape_gemini_key",
   history: "leadscrape_history",
+  app: "leadscrape_app_token",
 };
 
 const state = {
@@ -30,6 +31,58 @@ function getKeys() {
     apify: localStorage.getItem(LS.apify) || "",
     gemini: localStorage.getItem(LS.gemini) || "",
   };
+}
+
+/* ---------- Logowanie (gdy włączone hasło) ---------- */
+
+// Dokłada token dostępu (jeśli jest) do nagłówków każdego żądania API.
+function withAuth(headers) {
+  const h = Object.assign({}, headers || {});
+  const token = localStorage.getItem(LS.app);
+  if (token) h["x-app-token"] = token;
+  return h;
+}
+
+// Wywoływane, gdy serwer odrzuci żądanie (401) — pokazuje ekran logowania.
+function handleAuthError() {
+  localStorage.removeItem(LS.app);
+  $("#loginModal").classList.remove("hidden");
+  toast("Sesja wygasła — zaloguj się ponownie.", true);
+}
+
+async function doLogin() {
+  const password = $("#loginPass").value;
+  if (!password) { toast("Podaj hasło.", true); return; }
+  try {
+    const res = await fetch("/api/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ password }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Błąd logowania.");
+    localStorage.setItem(LS.app, data.token);
+    $("#loginModal").classList.add("hidden");
+    $("#loginPass").value = "";
+    toast("Zalogowano.");
+  } catch (err) {
+    toast(err.message, true);
+  }
+}
+
+// Sprawdza przy starcie, czy aplikacja wymaga hasła i czy mamy ważny token.
+async function checkAuthGate() {
+  try {
+    const res = await fetch("/api/health");
+    const data = await res.json();
+    if (data.authRequired && !localStorage.getItem(LS.app)) {
+      $("#loginModal").classList.remove("hidden");
+      return false;
+    }
+  } catch {
+    /* offline / brak serwera — pomijamy bramkę */
+  }
+  return true;
 }
 
 function refreshKeyDot() {
@@ -106,10 +159,11 @@ async function startScrape() {
   try {
     const res = await fetch("/api/scrape/start", {
       method: "POST",
-      headers: { "Content-Type": "application/json", "x-apify-token": apify },
+      headers: withAuth({ "Content-Type": "application/json", "x-apify-token": apify }),
       body: JSON.stringify({ query, location, limit, skipContacts }),
     });
     const data = await res.json();
+    if (res.status === 401) { handleAuthError(); throw new Error("Wymagane logowanie."); }
     if (!res.ok) throw new Error(data.error || "Błąd uruchomienia.");
 
     const sub = skipContacts
@@ -128,8 +182,9 @@ function pollStatus(runId, datasetId, limit) {
 
   state.poll = setInterval(async () => {
     try {
-      const res = await fetch(`/api/scrape/status/${runId}`, { headers: { "x-apify-token": apify } });
+      const res = await fetch(`/api/scrape/status/${runId}`, { headers: withAuth({ "x-apify-token": apify }) });
       const data = await res.json();
+      if (res.status === 401) { clearInterval(state.poll); stopTimer(); handleAuthError(); return; }
       if (!res.ok) throw new Error(data.error || "Błąd statusu.");
 
       // Heurystyczny pasek postępu na podstawie liczby zebranych pozycji.
@@ -159,8 +214,9 @@ async function fetchResults(datasetId) {
   const { apify } = getKeys();
   setProgress("Pobieram wyniki…", "Normalizacja danych leadów", true, 96);
   try {
-    const res = await fetch(`/api/scrape/results/${datasetId}`, { headers: { "x-apify-token": apify } });
+    const res = await fetch(`/api/scrape/results/${datasetId}`, { headers: withAuth({ "x-apify-token": apify }) });
     const data = await res.json();
+    if (res.status === 401) { handleAuthError(); throw new Error("Wymagane logowanie."); }
     if (!res.ok) throw new Error(data.error || "Błąd pobierania wyników.");
 
     setProgress("Gotowe", `Znaleziono ${data.count} firm`, false, 100);
@@ -382,10 +438,11 @@ async function runAnalysis(lead) {
   if (!gemini) throw new Error("Brak klucza Gemini.");
   const res = await fetch("/api/analyze", {
     method: "POST",
-    headers: { "Content-Type": "application/json", "x-gemini-key": gemini },
+    headers: withAuth({ "Content-Type": "application/json", "x-gemini-key": gemini }),
     body: JSON.stringify({ company: lead }),
   });
   const data = await res.json();
+  if (res.status === 401) { handleAuthError(); throw new Error("Wymagane logowanie."); }
   if (!res.ok) throw new Error(data.error || "Błąd analizy.");
   return data;
 }
@@ -613,7 +670,7 @@ async function bulkAnalyze() {
 
 /* ---------- Inicjalizacja ---------- */
 
-function init() {
+async function init() {
   refreshKeyDot();
 
   $("#searchBtn").addEventListener("click", startScrape);
@@ -627,6 +684,10 @@ function init() {
   $("#settingsModal").addEventListener("click", (e) => {
     if (e.target.id === "settingsModal") $("#settingsModal").classList.add("hidden");
   });
+
+  // Logowanie
+  $("#loginBtn").addEventListener("click", doLogin);
+  $("#loginPass").addEventListener("keydown", (e) => { if (e.key === "Enter") doLogin(); });
 
   $("#filters").addEventListener("click", (e) => {
     const chip = e.target.closest(".chip");
@@ -676,9 +737,12 @@ function init() {
     }
   });
 
-  // Pierwsze uruchomienie — poproś o klucze.
-  const { apify, gemini } = getKeys();
-  if (!apify || !gemini) setTimeout(openSettings, 400);
+  // Bramka hasła (jeśli włączona) — dopiero potem ewentualnie prosimy o klucze.
+  const authOk = await checkAuthGate();
+  if (authOk) {
+    const { apify, gemini } = getKeys();
+    if (!apify || !gemini) setTimeout(openSettings, 400);
+  }
 }
 
 document.addEventListener("DOMContentLoaded", init);

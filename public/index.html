@@ -119,6 +119,21 @@
 
   </main>
 
+  <!-- MODAL: LOGOWANIE (gdy włączone hasło) -->
+  <div id="loginModal" class="modal hidden">
+    <div class="modal-card glass">
+      <h3>Dostęp chroniony</h3>
+      <p class="muted">Ta aplikacja jest zabezpieczona hasłem. Podaj je, aby kontynuować.</p>
+      <label class="field">
+        <span>Hasło</span>
+        <input id="loginPass" type="password" placeholder="••••••••" autocomplete="current-password" />
+      </label>
+      <div class="modal-actions">
+        <button class="btn btn-primary" id="loginBtn" type="button">Wejdź</button>
+      </div>
+    </div>
+  </div>
+
   <!-- MODAL: KLUCZE API -->
   <div id="settingsModal" class="modal hidden">
     <div class="modal-card glass">
