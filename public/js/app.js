@@ -1,0 +1,476 @@
+/* ============================================================
+   AI LeadScrape Outreach Engine — logika frontendu (Vanilla JS)
+   ============================================================ */
+
+const $ = (sel) => document.querySelector(sel);
+const $$ = (sel) => Array.from(document.querySelectorAll(sel));
+
+const LS = {
+  apify: "leadscrape_apify_token",
+  gemini: "leadscrape_gemini_key",
+};
+
+const state = {
+  leads: [],
+  filtered: [],
+  activeFilters: new Set(),
+  view: "cards",
+  poll: null,
+  timer: null,
+  startedAt: 0,
+};
+
+/* ---------- Klucze API ---------- */
+
+function getKeys() {
+  return {
+    apify: localStorage.getItem(LS.apify) || "",
+    gemini: localStorage.getItem(LS.gemini) || "",
+  };
+}
+
+function refreshKeyDot() {
+  const { apify, gemini } = getKeys();
+  $("#keyDot").classList.toggle("ok", Boolean(apify && gemini));
+}
+
+function openSettings() {
+  const { apify, gemini } = getKeys();
+  $("#apifyTokenInput").value = apify;
+  $("#geminiKeyInput").value = gemini;
+  $("#settingsModal").classList.remove("hidden");
+}
+
+function saveSettings() {
+  localStorage.setItem(LS.apify, $("#apifyTokenInput").value.trim());
+  localStorage.setItem(LS.gemini, $("#geminiKeyInput").value.trim());
+  $("#settingsModal").classList.add("hidden");
+  refreshKeyDot();
+  toast("Klucze zapisane w przeglądarce.");
+}
+
+/* ---------- Toast ---------- */
+
+let toastTimer;
+function toast(msg, isError = false) {
+  const t = $("#toast");
+  t.textContent = msg;
+  t.classList.toggle("err", isError);
+  t.classList.remove("hidden");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.classList.add("hidden"), 3400);
+}
+
+/* ---------- Stoper ---------- */
+
+function startTimer() {
+  state.startedAt = Date.now();
+  const tick = () => {
+    const s = Math.floor((Date.now() - state.startedAt) / 1000);
+    const mm = String(Math.floor(s / 60)).padStart(2, "0");
+    const ss = String(s % 60).padStart(2, "0");
+    $("#stopwatch").textContent = `${mm}:${ss}`;
+  };
+  tick();
+  state.timer = setInterval(tick, 1000);
+}
+function stopTimer() { clearInterval(state.timer); }
+
+/* ---------- Scraping ---------- */
+
+async function startScrape() {
+  const { apify } = getKeys();
+  if (!apify) { toast("Najpierw zapisz token Apify.", true); openSettings(); return; }
+
+  const query = $("#queryInput").value.trim();
+  const location = $("#locationInput").value.trim();
+  const limit = parseInt($("#limitInput").value, 10) || 20;
+  if (!query || !location) { toast("Podaj branżę i lokalizację.", true); return; }
+
+  const btn = $("#searchBtn");
+  btn.disabled = true;
+  btn.textContent = "Uruchamiam…";
+
+  // UI postępu
+  $("#progressPanel").classList.remove("hidden");
+  $("#resultsSection").classList.add("hidden");
+  setProgress("Inicjalizacja…", "Uruchamiam aktora Apify", true, 0);
+  startTimer();
+
+  try {
+    const res = await fetch("/api/scrape/start", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-apify-token": apify },
+      body: JSON.stringify({ query, location, limit }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Błąd uruchomienia.");
+
+    setProgress("Scrapuję Google Maps…", "Aktor odwiedza wizytówki i strony firm", true, 0);
+    pollStatus(data.runId, data.datasetId, limit);
+  } catch (err) {
+    failScrape(err.message);
+  }
+}
+
+function pollStatus(runId, datasetId, limit) {
+  const { apify } = getKeys();
+  let pct = 8;
+
+  state.poll = setInterval(async () => {
+    try {
+      const res = await fetch(`/api/scrape/status/${runId}`, { headers: { "x-apify-token": apify } });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Błąd statusu.");
+
+      // Heurystyczny pasek postępu na podstawie liczby zebranych pozycji.
+      if (typeof data.itemCount === "number" && limit) {
+        pct = Math.min(92, Math.round((data.itemCount / limit) * 100));
+        setProgress("Scrapuję Google Maps…", `Zebrano ${data.itemCount} z ~${limit} firm`, false, pct);
+      } else {
+        pct = Math.min(88, pct + 4);
+        setProgress("Scrapuję Google Maps…", "Aktor odwiedza wizytówki i strony firm", false, pct);
+      }
+
+      if (data.status === "SUCCEEDED") {
+        clearInterval(state.poll);
+        await fetchResults(datasetId);
+      } else if (["FAILED", "ABORTED", "TIMED-OUT"].includes(data.status)) {
+        clearInterval(state.poll);
+        failScrape(`Aktor zakończył się statusem: ${data.status}`);
+      }
+    } catch (err) {
+      clearInterval(state.poll);
+      failScrape(err.message);
+    }
+  }, 4000); // polling co 4 s
+}
+
+async function fetchResults(datasetId) {
+  const { apify } = getKeys();
+  setProgress("Pobieram wyniki…", "Normalizacja danych leadów", true, 96);
+  try {
+    const res = await fetch(`/api/scrape/results/${datasetId}`, { headers: { "x-apify-token": apify } });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Błąd pobierania wyników.");
+
+    setProgress("Gotowe", `Znaleziono ${data.count} firm`, false, 100);
+    stopTimer();
+    state.leads = data.leads;
+    state.activeFilters.clear();
+    $$(".chip").forEach((c) => c.classList.remove("active"));
+    applyFilters();
+
+    setTimeout(() => $("#progressPanel").classList.add("hidden"), 900);
+    $("#resultsSection").classList.remove("hidden");
+    resetSearchBtn();
+
+    if (data.count === 0) toast("Brak wyników — spróbuj innej frazy lub większego limitu.");
+  } catch (err) {
+    failScrape(err.message);
+  }
+}
+
+function setProgress(status, sub, indeterminate, pct) {
+  $("#progressStatus").textContent = status;
+  $("#progressSub").textContent = sub;
+  const bar = $("#progressBar");
+  bar.classList.toggle("indeterminate", Boolean(indeterminate));
+  if (!indeterminate) bar.style.width = `${pct}%`;
+  else bar.style.width = "";
+}
+
+function failScrape(msg) {
+  clearInterval(state.poll);
+  stopTimer();
+  setProgress("Błąd", msg, false, 0);
+  $("#progressBar").classList.remove("indeterminate");
+  resetSearchBtn();
+  toast(msg, true);
+}
+
+function resetSearchBtn() {
+  const btn = $("#searchBtn");
+  btn.disabled = false;
+  btn.textContent = "Uruchom scraping";
+}
+
+/* ---------- Filtrowanie ---------- */
+
+function applyFilters() {
+  const f = state.activeFilters;
+  state.filtered = state.leads.filter((lead) => {
+    if (f.has("email") && !lead.flags.email) return false;
+    if (f.has("instagram") && !lead.flags.instagram) return false;
+    if (f.has("www") && !lead.flags.www) return false;
+    if (f.has("nowww") && lead.flags.www) return false;
+    return true;
+  });
+  render();
+}
+
+/* ---------- Render ---------- */
+
+function render() {
+  $("#resultCount").textContent = state.filtered.length;
+  const withEmail = state.filtered.filter((l) => l.flags.email).length;
+  const noWww = state.filtered.filter((l) => !l.flags.www).length;
+  $("#filterStats").textContent =
+    state.filtered.length ? `· ${withEmail} z e-mailem · ${noWww} bez strony WWW` : "";
+
+  const empty = state.filtered.length === 0;
+  $("#emptyState").classList.toggle("hidden", !empty);
+
+  if (state.view === "cards") {
+    $("#tableView").classList.add("hidden");
+    $("#cardsView").classList.toggle("hidden", empty);
+    renderCards();
+  } else {
+    $("#cardsView").classList.add("hidden");
+    $("#tableView").classList.toggle("hidden", empty);
+    renderTable();
+  }
+}
+
+function esc(s) {
+  return String(s ?? "").replace(/[&<>"']/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])
+  );
+}
+
+function socialBadges(lead) {
+  const out = [];
+  for (const [k, v] of Object.entries(lead.socials)) {
+    if (v) out.push(`<a class="badge social" href="${esc(v)}" target="_blank" rel="noopener">${k}</a>`);
+  }
+  return out.join("");
+}
+
+function renderCards() {
+  $("#cardsView").innerHTML = state.filtered
+    .map((lead, i) => {
+      const rating = lead.rating != null
+        ? `<span class="rating">★ ${lead.rating.toFixed(1)} <small>(${lead.reviewsCount})</small></span>`
+        : "";
+      const website = lead.hasWebsiteInCard
+        ? `<div class="meta-row"><span class="ico">🌐</span><a href="${esc(lead.website)}" target="_blank" rel="noopener">${esc(lead.website.replace(/^https?:\/\//, ""))}</a></div>`
+        : `<div class="meta-row"><span class="ico">🌐</span><span style="color:var(--bad)">brak dedykowanej strony</span></div>`;
+      const email = lead.email
+        ? `<div class="meta-row"><span class="ico">✉️</span><a href="mailto:${esc(lead.email)}">${esc(lead.email)}</a></div>`
+        : "";
+      const phone = lead.phone
+        ? `<div class="meta-row"><span class="ico">📞</span>${esc(lead.phone)}</div>`
+        : "";
+
+      return `
+      <article class="card" data-i="${i}">
+        <div class="card-head">
+          <div>
+            <div class="card-name">${esc(lead.name)}</div>
+            <div class="card-cat">${esc(lead.category)}</div>
+          </div>
+          ${rating}
+        </div>
+        <div class="card-meta">
+          ${lead.address ? `<div class="meta-row"><span class="ico">📍</span>${esc(lead.address)}</div>` : ""}
+          ${phone}${email}${website}
+        </div>
+        <div class="badges">
+          <span class="badge ${lead.flags.email ? "on" : "off"}">e-mail</span>
+          <span class="badge ${lead.flags.www ? "on" : "off"}">WWW</span>
+          ${socialBadges(lead)}
+        </div>
+        <div class="card-foot">
+          <button class="btn-ai" data-ai="${i}">✦ Analizuj AI</button>
+          ${lead.mapsUrl ? `<a class="btn-link" href="${esc(lead.mapsUrl)}" target="_blank" rel="noopener" title="Otwórz w Mapach">↗</a>` : ""}
+        </div>
+      </article>`;
+    })
+    .join("");
+
+  $$("#cardsView [data-ai]").forEach((btn) =>
+    btn.addEventListener("click", () => analyze(state.filtered[+btn.dataset.ai], btn))
+  );
+}
+
+function renderTable() {
+  const rows = state.filtered
+    .map((lead, i) => `
+      <tr>
+        <td>${esc(lead.name)}</td>
+        <td>${esc(lead.category)}</td>
+        <td>${esc(lead.phone)}</td>
+        <td class="${lead.flags.email ? "cell-yes" : "cell-no"}">${lead.email ? esc(lead.email) : "—"}</td>
+        <td class="${lead.flags.www ? "cell-yes" : "cell-no"}">${lead.flags.www ? "tak" : "nie"}</td>
+        <td class="${lead.flags.instagram ? "cell-yes" : "cell-no"}">${lead.flags.instagram ? "tak" : "—"}</td>
+        <td>${lead.rating != null ? `★ ${lead.rating.toFixed(1)} (${lead.reviewsCount})` : "—"}</td>
+        <td><button class="tbl-ai" data-ai="${i}">Analizuj AI</button></td>
+      </tr>`)
+    .join("");
+
+  $("#tableView").innerHTML = `
+    <table>
+      <thead><tr>
+        <th>Nazwa</th><th>Branża</th><th>Telefon</th><th>E-mail</th>
+        <th>WWW</th><th>Instagram</th><th>Ocena</th><th></th>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+    </table>`;
+
+  $$("#tableView [data-ai]").forEach((btn) =>
+    btn.addEventListener("click", () => analyze(state.filtered[+btn.dataset.ai], btn))
+  );
+}
+
+/* ---------- Eksport ---------- */
+
+function exportJson() {
+  if (!state.filtered.length) return toast("Brak danych do eksportu.", true);
+  download("leady.json", JSON.stringify(state.filtered, null, 2), "application/json");
+}
+
+function exportCsv() {
+  if (!state.filtered.length) return toast("Brak danych do eksportu.", true);
+  const cols = ["name", "category", "address", "phone", "email", "website", "hasWebsiteInCard", "rating", "reviewsCount", "instagram", "facebook", "tiktok", "mapsUrl"];
+  const head = cols.join(";");
+  const esc = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+  const lines = state.filtered.map((l) =>
+    [
+      l.name, l.category, l.address, l.phone, l.email, l.website,
+      l.hasWebsiteInCard ? "tak" : "nie", l.rating ?? "", l.reviewsCount,
+      l.socials.instagram, l.socials.facebook, l.socials.tiktok, l.mapsUrl,
+    ].map(esc).join(";")
+  );
+  // UTF-8 BOM, by Excel poprawnie odczytał polskie znaki.
+  const csv = "\uFEFF" + [head, ...lines].join("\r\n");
+  download("leady.csv", csv, "text/csv;charset=utf-8");
+}
+
+function download(filename, content, type) {
+  const blob = new Blob([content], { type });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = filename; a.click();
+  URL.revokeObjectURL(url);
+  toast(`Wyeksportowano ${filename}`);
+}
+
+/* ---------- Analiza AI ---------- */
+
+async function analyze(lead, btn) {
+  const { gemini } = getKeys();
+  if (!gemini) { toast("Najpierw zapisz klucz Gemini.", true); openSettings(); return; }
+
+  if (btn) { btn.disabled = true; }
+  openDrawer(`
+    <div class="ai-loading">
+      <div class="spinner"></div>
+      <p>Gemini analizuje firmę <strong>${esc(lead.name)}</strong>…</p>
+    </div>`);
+
+  try {
+    const res = await fetch("/api/analyze", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-gemini-key": gemini },
+      body: JSON.stringify({ company: lead }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Błąd analizy.");
+    renderAnalysis(lead, data);
+  } catch (err) {
+    openDrawer(`<div class="ai-loading"><p style="color:var(--bad)">${esc(err.message)}</p></div>`);
+    toast(err.message, true);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+function renderAnalysis(lead, a) {
+  const li = (arr) => (arr || []).map((x) => `<li>${esc(x)}</li>`).join("");
+  openDrawer(`
+    <div class="ai-head">
+      <h3>${esc(lead.name)}</h3>
+      <p>${esc(lead.category)} · audyt marketingowy AI</p>
+    </div>
+    <div class="ai-block">
+      <h4>Mocne strony</h4>
+      <ul class="ai-list strong">${li(a.mocneStrony)}</ul>
+    </div>
+    <div class="ai-block">
+      <h4>Słabe punkty</h4>
+      <ul class="ai-list weak">${li(a.slabePunkty)}</ul>
+    </div>
+    <div class="ai-block">
+      <h4>Propozycja wiadomości</h4>
+      <div class="outreach-box" id="outreachText">${esc(a.wiadomoscOutreach)}</div>
+      <button class="btn btn-primary copy-btn" id="copyOutreach">Kopiuj ofertę</button>
+    </div>`);
+
+  $("#copyOutreach").addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(a.wiadomoscOutreach);
+      toast("Skopiowano ofertę do schowka.");
+    } catch {
+      toast("Nie udało się skopiować.", true);
+    }
+  });
+}
+
+function openDrawer(html) {
+  $("#aiContent").innerHTML = html;
+  $("#aiDrawer").classList.remove("hidden");
+}
+function closeDrawer() { $("#aiDrawer").classList.add("hidden"); }
+
+/* ---------- Inicjalizacja ---------- */
+
+function init() {
+  refreshKeyDot();
+
+  $("#searchBtn").addEventListener("click", startScrape);
+  $$("#queryInput, #locationInput").forEach((el) =>
+    el.addEventListener("keydown", (e) => { if (e.key === "Enter") startScrape(); })
+  );
+
+  $("#settingsBtn").addEventListener("click", openSettings);
+  $("#settingsSave").addEventListener("click", saveSettings);
+  $("#settingsCancel").addEventListener("click", () => $("#settingsModal").classList.add("hidden"));
+  $("#settingsModal").addEventListener("click", (e) => {
+    if (e.target.id === "settingsModal") $("#settingsModal").classList.add("hidden");
+  });
+
+  $("#filters").addEventListener("click", (e) => {
+    const chip = e.target.closest(".chip");
+    if (!chip) return;
+    const f = chip.dataset.filter;
+    // WWW i bez-WWW wykluczają się wzajemnie.
+    if (f === "www" && state.activeFilters.has("nowww")) state.activeFilters.delete("nowww");
+    if (f === "nowww" && state.activeFilters.has("www")) state.activeFilters.delete("www");
+    chip.classList.toggle("active");
+    if (state.activeFilters.has(f)) state.activeFilters.delete(f);
+    else state.activeFilters.add(f);
+    $$(".chip").forEach((c) => c.classList.toggle("active", state.activeFilters.has(c.dataset.filter)));
+    applyFilters();
+  });
+
+  $("#viewToggle").addEventListener("click", (e) => {
+    const v = e.target.closest(".vt");
+    if (!v) return;
+    state.view = v.dataset.view;
+    $$(".vt").forEach((b) => b.classList.toggle("active", b === v));
+    render();
+  });
+
+  $("#exportCsv").addEventListener("click", exportCsv);
+  $("#exportJson").addEventListener("click", exportJson);
+
+  $("#aiClose").addEventListener("click", closeDrawer);
+  $("#aiDrawer").addEventListener("click", (e) => { if (e.target.id === "aiDrawer") closeDrawer(); });
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape") { closeDrawer(); $("#settingsModal").classList.add("hidden"); } });
+
+  // Pierwsze uruchomienie — poproś o klucze.
+  const { apify, gemini } = getKeys();
+  if (!apify || !gemini) setTimeout(openSettings, 400);
+}
+
+document.addEventListener("DOMContentLoaded", init);

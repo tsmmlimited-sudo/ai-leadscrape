@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AI LeadScrape Outreach Engine</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/css/style.css" />
+</head>
+<body>
+  <!-- Tło: warstwy poświaty -->
+  <div class="aurora" aria-hidden="true">
+    <span class="blob blob-1"></span>
+    <span class="blob blob-2"></span>
+    <span class="blob blob-3"></span>
+  </div>
+
+  <header class="topbar glass">
+    <div class="brand">
+      <span class="brand-mark">◆</span>
+      <div class="brand-text">
+        <h1>LeadScrape <em>Outreach Engine</em></h1>
+        <p>Google Maps × AI — od leada do gotowej oferty w kilka sekund</p>
+      </div>
+    </div>
+    <button id="settingsBtn" class="btn btn-ghost" type="button">
+      <span class="dot" id="keyDot"></span> Klucze API
+    </button>
+  </header>
+
+  <main class="container">
+
+    <!-- WYSZUKIWARKA -->
+    <section class="panel glass search-panel">
+      <h2 class="panel-title">Nowe wyszukiwanie</h2>
+      <div class="search-grid">
+        <label class="field">
+          <span>Branża</span>
+          <input id="queryInput" type="text" placeholder="np. fryzjer" autocomplete="off" />
+        </label>
+        <label class="field">
+          <span>Lokalizacja</span>
+          <input id="locationInput" type="text" placeholder="np. Przemyśl" autocomplete="off" />
+        </label>
+        <label class="field field-narrow">
+          <span>Limit</span>
+          <input id="limitInput" type="number" min="1" max="500" value="20" />
+        </label>
+        <button id="searchBtn" class="btn btn-primary" type="button">
+          Uruchom scraping
+        </button>
+      </div>
+    </section>
+
+    <!-- POSTĘP -->
+    <section id="progressPanel" class="panel glass progress-panel hidden">
+      <div class="progress-head">
+        <div>
+          <span class="progress-status" id="progressStatus">Inicjalizacja…</span>
+          <span class="progress-sub" id="progressSub">Uruchamiam aktora Apify</span>
+        </div>
+        <div class="stopwatch" id="stopwatch">00:00</div>
+      </div>
+      <div class="progress-track"><div class="progress-bar" id="progressBar"></div></div>
+    </section>
+
+    <!-- WYNIKI -->
+    <section id="resultsSection" class="hidden">
+      <div class="toolbar glass">
+        <div class="toolbar-left">
+          <strong id="resultCount">0</strong> firm
+          <span class="filter-stats" id="filterStats"></span>
+        </div>
+        <div class="toolbar-right">
+          <div class="filters" id="filters">
+            <button class="chip" data-filter="email">Z e-mailem</button>
+            <button class="chip" data-filter="instagram">Z Instagramem</button>
+            <button class="chip" data-filter="www">Ze stroną WWW</button>
+            <button class="chip" data-filter="nowww">Bez strony WWW</button>
+          </div>
+          <div class="view-toggle" id="viewToggle">
+            <button class="vt active" data-view="cards" title="Kafelki">▦</button>
+            <button class="vt" data-view="table" title="Tabela">▤</button>
+          </div>
+          <div class="exports">
+            <button class="btn btn-ghost btn-sm" id="exportCsv">CSV</button>
+            <button class="btn btn-ghost btn-sm" id="exportJson">JSON</button>
+          </div>
+        </div>
+      </div>
+
+      <div id="cardsView" class="cards-grid"></div>
+      <div id="tableView" class="table-wrap hidden"></div>
+
+      <div id="emptyState" class="empty hidden">
+        <p>Brak firm spełniających wybrane filtry.</p>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- MODAL: KLUCZE API -->
+  <div id="settingsModal" class="modal hidden">
+    <div class="modal-card glass">
+      <h3>Klucze API</h3>
+      <p class="muted">Zapisywane wyłącznie w Twojej przeglądarce (localStorage). Serwer ich nie przechowuje.</p>
+      <label class="field">
+        <span>Apify Token</span>
+        <input id="apifyTokenInput" type="password" placeholder="apify_api_..." autocomplete="off" />
+      </label>
+      <label class="field">
+        <span>Gemini API Key</span>
+        <input id="geminiKeyInput" type="password" placeholder="AIza..." autocomplete="off" />
+      </label>
+      <div class="modal-actions">
+        <button class="btn btn-ghost" id="settingsCancel" type="button">Anuluj</button>
+        <button class="btn btn-primary" id="settingsSave" type="button">Zapisz</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- DRAWER: ANALIZA AI -->
+  <div id="aiDrawer" class="drawer hidden">
+    <div class="drawer-panel glass">
+      <button class="drawer-close" id="aiClose" type="button">✕</button>
+      <div id="aiContent"></div>
+    </div>
+  </div>
+
+  <!-- TOAST -->
+  <div id="toast" class="toast hidden"></div>
+
+  <script src="/js/app.js"></script>
+</body>
+</html>
