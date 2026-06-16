@@ -8,16 +8,19 @@ const $$ = (sel) => Array.from(document.querySelectorAll(sel));
 const LS = {
   apify: "leadscrape_apify_token",
   gemini: "leadscrape_gemini_key",
+  history: "leadscrape_history",
 };
 
 const state = {
   leads: [],
   filtered: [],
   activeFilters: new Set(),
+  selected: new Set(),   // id-ki firm zaznaczonych do masowej analizy
   view: "cards",
   poll: null,
   timer: null,
   startedAt: 0,
+  bulkCancel: false,
 };
 
 /* ---------- Klucze API ---------- */
@@ -91,9 +94,12 @@ async function startScrape() {
   btn.disabled = true;
   btn.textContent = "Uruchamiam…";
 
+  const skipContacts = $("#skipContacts").checked;
+
   // UI postępu
   $("#progressPanel").classList.remove("hidden");
   $("#resultsSection").classList.add("hidden");
+  state.selected.clear();
   setProgress("Inicjalizacja…", "Uruchamiam aktora Apify", true, 0);
   startTimer();
 
@@ -101,12 +107,15 @@ async function startScrape() {
     const res = await fetch("/api/scrape/start", {
       method: "POST",
       headers: { "Content-Type": "application/json", "x-apify-token": apify },
-      body: JSON.stringify({ query, location, limit }),
+      body: JSON.stringify({ query, location, limit, skipContacts }),
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || "Błąd uruchomienia.");
 
-    setProgress("Scrapuję Google Maps…", "Aktor odwiedza wizytówki i strony firm", true, 0);
+    const sub = skipContacts
+      ? "Tryb szybki — bez wchodzenia na strony firm"
+      : "Aktor odwiedza wizytówki i strony firm";
+    setProgress("Scrapuję Google Maps…", sub, true, 0);
     pollStatus(data.runId, data.datasetId, limit);
   } catch (err) {
     failScrape(err.message);
@@ -220,6 +229,7 @@ function render() {
 
   const empty = state.filtered.length === 0;
   $("#emptyState").classList.toggle("hidden", !empty);
+  $("#selectBar").classList.toggle("hidden", empty);
 
   if (state.view === "cards") {
     $("#tableView").classList.add("hidden");
@@ -230,6 +240,7 @@ function render() {
     $("#tableView").classList.toggle("hidden", empty);
     renderTable();
   }
+  updateSelectBar();
 }
 
 function esc(s) {
@@ -263,7 +274,8 @@ function renderCards() {
         : "";
 
       return `
-      <article class="card" data-i="${i}">
+      <article class="card ${state.selected.has(lead.id) ? "selected" : ""}" data-i="${i}">
+        <input type="checkbox" class="card-select" data-sel="${esc(lead.id)}" ${state.selected.has(lead.id) ? "checked" : ""} title="Zaznacz do masowej analizy" />
         <div class="card-head">
           <div>
             <div class="card-name">${esc(lead.name)}</div>
@@ -291,12 +303,16 @@ function renderCards() {
   $$("#cardsView [data-ai]").forEach((btn) =>
     btn.addEventListener("click", () => analyze(state.filtered[+btn.dataset.ai], btn))
   );
+  $$("#cardsView [data-sel]").forEach((cb) =>
+    cb.addEventListener("change", () => toggleSelect(cb.dataset.sel))
+  );
 }
 
 function renderTable() {
   const rows = state.filtered
     .map((lead, i) => `
-      <tr>
+      <tr class="${state.selected.has(lead.id) ? "row-selected" : ""}">
+        <td class="tbl-check"><input type="checkbox" data-sel="${esc(lead.id)}" ${state.selected.has(lead.id) ? "checked" : ""} /></td>
         <td>${esc(lead.name)}</td>
         <td>${esc(lead.category)}</td>
         <td>${esc(lead.phone)}</td>
@@ -311,7 +327,7 @@ function renderTable() {
   $("#tableView").innerHTML = `
     <table>
       <thead><tr>
-        <th>Nazwa</th><th>Branża</th><th>Telefon</th><th>E-mail</th>
+        <th></th><th>Nazwa</th><th>Branża</th><th>Telefon</th><th>E-mail</th>
         <th>WWW</th><th>Instagram</th><th>Ocena</th><th></th>
       </tr></thead>
       <tbody>${rows}</tbody>
@@ -319,6 +335,9 @@ function renderTable() {
 
   $$("#tableView [data-ai]").forEach((btn) =>
     btn.addEventListener("click", () => analyze(state.filtered[+btn.dataset.ai], btn))
+  );
+  $$("#tableView [data-sel]").forEach((cb) =>
+    cb.addEventListener("change", () => toggleSelect(cb.dataset.sel))
   );
 }
 
@@ -357,11 +376,25 @@ function download(filename, content, type) {
 
 /* ---------- Analiza AI ---------- */
 
+// Wspólny rdzeń: wywołuje Gemini i zwraca dane analizy (rzuca wyjątek przy błędzie).
+async function runAnalysis(lead) {
+  const { gemini } = getKeys();
+  if (!gemini) throw new Error("Brak klucza Gemini.");
+  const res = await fetch("/api/analyze", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "x-gemini-key": gemini },
+    body: JSON.stringify({ company: lead }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || "Błąd analizy.");
+  return data;
+}
+
 async function analyze(lead, btn) {
   const { gemini } = getKeys();
   if (!gemini) { toast("Najpierw zapisz klucz Gemini.", true); openSettings(); return; }
 
-  if (btn) { btn.disabled = true; }
+  if (btn) btn.disabled = true;
   openDrawer(`
     <div class="ai-loading">
       <div class="spinner"></div>
@@ -369,13 +402,8 @@ async function analyze(lead, btn) {
     </div>`);
 
   try {
-    const res = await fetch("/api/analyze", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "x-gemini-key": gemini },
-      body: JSON.stringify({ company: lead }),
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || "Błąd analizy.");
+    const data = await runAnalysis(lead);
+    saveToHistory(lead, data);
     renderAnalysis(lead, data);
   } catch (err) {
     openDrawer(`<div class="ai-loading"><p style="color:var(--bad)">${esc(err.message)}</p></div>`);
@@ -422,6 +450,167 @@ function openDrawer(html) {
 }
 function closeDrawer() { $("#aiDrawer").classList.add("hidden"); }
 
+/* ---------- Zaznaczanie (do masowej analizy) ---------- */
+
+function toggleSelect(id) {
+  if (state.selected.has(id)) state.selected.delete(id);
+  else state.selected.add(id);
+  // odśwież klasy bez pełnego re-renderu
+  $$(`[data-sel="${cssEscape(id)}"]`).forEach((cb) => {
+    cb.checked = state.selected.has(id);
+    const card = cb.closest(".card");
+    if (card) card.classList.toggle("selected", state.selected.has(id));
+    const row = cb.closest("tr");
+    if (row) row.classList.toggle("row-selected", state.selected.has(id));
+  });
+  updateSelectBar();
+}
+
+function cssEscape(s) {
+  return String(s).replace(/["\\]/g, "\\$&");
+}
+
+function updateSelectBar() {
+  const n = state.selected.size;
+  $("#selectCount").textContent = n;
+  $("#bulkAnalyze").disabled = n === 0;
+  const visibleIds = state.filtered.map((l) => l.id);
+  const allSelected = visibleIds.length > 0 && visibleIds.every((id) => state.selected.has(id));
+  $("#selectAll").checked = allSelected;
+}
+
+function selectAllVisible(check) {
+  state.filtered.forEach((l) => {
+    if (check) state.selected.add(l.id);
+    else state.selected.delete(l.id);
+  });
+  render();
+}
+
+function clearSelection() {
+  state.selected.clear();
+  render();
+}
+
+/* ---------- Historia ofert ---------- */
+
+function loadHistory() {
+  try { return JSON.parse(localStorage.getItem(LS.history) || "[]"); }
+  catch { return []; }
+}
+
+function saveToHistory(lead, analysis) {
+  const hist = loadHistory();
+  hist.unshift({
+    name: lead.name,
+    category: lead.category,
+    email: lead.email || "",
+    mocneStrony: analysis.mocneStrony || [],
+    slabePunkty: analysis.slabePunkty || [],
+    wiadomoscOutreach: analysis.wiadomoscOutreach || "",
+    date: Date.now(),
+  });
+  localStorage.setItem(LS.history, JSON.stringify(hist.slice(0, 200))); // limit 200
+  updateHistCount();
+}
+
+function updateHistCount() {
+  $("#histCount").textContent = loadHistory().length;
+}
+
+function fmtDate(ts) {
+  const d = new Date(ts);
+  return d.toLocaleString("pl-PL", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+}
+
+function openHistory() {
+  renderHistoryList();
+  $("#historyDrawer").classList.remove("hidden");
+}
+function closeHistory() { $("#historyDrawer").classList.add("hidden"); }
+
+function renderHistoryList() {
+  const hist = loadHistory();
+  $("#historySub").textContent = hist.length ? `${hist.length} zapisanych analiz` : "Brak zapisanych analiz";
+  if (!hist.length) {
+    $("#historyList").innerHTML = `<p class="hist-empty">Tu pojawią się oferty po analizie firm.</p>`;
+    return;
+  }
+  $("#historyList").innerHTML = hist
+    .map((h, i) => `
+      <div class="hist-item">
+        <div class="hist-item-head">
+          <strong>${esc(h.name)}</strong>
+          <span class="hist-date">${fmtDate(h.date)}</span>
+        </div>
+        <div class="hist-msg" id="hm${i}">${esc(h.wiadomoscOutreach)}</div>
+        <div class="hist-actions">
+          <button data-copy="${i}">Kopiuj ofertę</button>
+          <button data-exp="${i}">Rozwiń</button>
+        </div>
+      </div>`)
+    .join("");
+
+  $$("#historyList [data-copy]").forEach((b) =>
+    b.addEventListener("click", async () => {
+      try { await navigator.clipboard.writeText(hist[+b.dataset.copy].wiadomoscOutreach); toast("Skopiowano ofertę."); }
+      catch { toast("Nie udało się skopiować.", true); }
+    })
+  );
+  $$("#historyList [data-exp]").forEach((b) =>
+    b.addEventListener("click", () => {
+      const m = $(`#hm${b.dataset.exp}`);
+      m.classList.toggle("expanded");
+      b.textContent = m.classList.contains("expanded") ? "Zwiń" : "Rozwiń";
+    })
+  );
+}
+
+function clearHistory() {
+  if (!loadHistory().length) return;
+  if (!confirm("Na pewno wyczyścić całą historię ofert?")) return;
+  localStorage.removeItem(LS.history);
+  updateHistCount();
+  renderHistoryList();
+  toast("Historia wyczyszczona.");
+}
+
+/* ---------- Masowa analiza ---------- */
+
+async function bulkAnalyze() {
+  const { gemini } = getKeys();
+  if (!gemini) { toast("Najpierw zapisz klucz Gemini.", true); openSettings(); return; }
+
+  const leads = state.filtered.filter((l) => state.selected.has(l.id));
+  if (!leads.length) { toast("Zaznacz najpierw firmy.", true); return; }
+
+  state.bulkCancel = false;
+  $("#bulkModal").classList.remove("hidden");
+  $("#bulkBar").classList.remove("indeterminate");
+
+  let done = 0, ok = 0, fail = 0;
+  for (const lead of leads) {
+    if (state.bulkCancel) break;
+    $("#bulkStatus").textContent = `Analizuję: ${lead.name}`;
+    $("#bulkDetail").textContent = `${done} z ${leads.length} • ${ok} OK • ${fail} błędów`;
+    try {
+      const data = await runAnalysis(lead);
+      saveToHistory(lead, data);
+      ok++;
+    } catch {
+      fail++;
+    }
+    done++;
+    $("#bulkBar").style.width = `${Math.round((done / leads.length) * 100)}%`;
+    $("#bulkDetail").textContent = `${done} z ${leads.length} • ${ok} OK • ${fail} błędów`;
+  }
+
+  $("#bulkModal").classList.add("hidden");
+  $("#bulkBar").style.width = "0%";
+  toast(state.bulkCancel ? `Zatrzymano. Zapisano ${ok} ofert.` : `Gotowe: ${ok} ofert (${fail} błędów).`);
+  if (ok > 0) openHistory();
+}
+
 /* ---------- Inicjalizacja ---------- */
 
 function init() {
@@ -464,9 +653,28 @@ function init() {
   $("#exportCsv").addEventListener("click", exportCsv);
   $("#exportJson").addEventListener("click", exportJson);
 
+  // Historia
+  updateHistCount();
+  $("#historyBtn").addEventListener("click", openHistory);
+  $("#historyClose").addEventListener("click", closeHistory);
+  $("#historyDrawer").addEventListener("click", (e) => { if (e.target.id === "historyDrawer") closeHistory(); });
+  $("#clearHistory").addEventListener("click", clearHistory);
+
+  // Zaznaczanie + masowa analiza
+  $("#selectAll").addEventListener("change", (e) => selectAllVisible(e.target.checked));
+  $("#clearSelect").addEventListener("click", clearSelection);
+  $("#bulkAnalyze").addEventListener("click", bulkAnalyze);
+  $("#bulkCancel").addEventListener("click", () => { state.bulkCancel = true; });
+
   $("#aiClose").addEventListener("click", closeDrawer);
   $("#aiDrawer").addEventListener("click", (e) => { if (e.target.id === "aiDrawer") closeDrawer(); });
-  document.addEventListener("keydown", (e) => { if (e.key === "Escape") { closeDrawer(); $("#settingsModal").classList.add("hidden"); } });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") {
+      closeDrawer();
+      closeHistory();
+      $("#settingsModal").classList.add("hidden");
+    }
+  });
 
   // Pierwsze uruchomienie — poproś o klucze.
   const { apify, gemini } = getKeys();

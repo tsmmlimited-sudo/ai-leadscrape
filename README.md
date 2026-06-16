@@ -18,6 +18,12 @@ przez **Google Gemini**.
 - **Eksport** — CSV (UTF-8 BOM dla Excela) oraz JSON.
 - **Analiza AI** — model `gemini-3.5-flash` zwraca ustrukturyzowany JSON: mocne strony,
   słabe punkty i gotową, spersonalizowaną wiadomość ofertową po polsku. Kopiowanie jednym kliknięciem.
+- **Tryb szybki** — przełącznik „Pomiń kontakty" wyłącza odwiedzanie stron firm
+  (`scrapeContacts: false`), przez co scraping leci znacznie szybciej (ale bez e-maili i social mediów).
+- **Masowa analiza** — zaznacz wiele firm (checkboxy na kartach/w tabeli) i przeanalizuj je
+  jednym przyciskiem; analizy lecą po kolei z paskiem postępu.
+- **Historia ofert** — każda wygenerowana analiza zapisuje się lokalnie (localStorage);
+  możesz do nich wrócić, skopiować ponownie lub wyczyścić historię.
 
 ## Wymagania
 

@@ -152,12 +152,13 @@ app.post("/api/scrape/start", async (req, res) => {
   const token = getApifyToken(req);
   if (!token) return res.status(400).json({ error: "Brak tokenu Apify (nagłówek x-apify-token)." });
 
-  const { query, location, limit } = req.body || {};
+  const { query, location, limit, skipContacts } = req.body || {};
   if (!query || !location) {
     return res.status(400).json({ error: "Wymagane pola: branża (query) i lokalizacja (location)." });
   }
 
   const max = Math.max(1, Math.min(Number(limit) || 20, 500));
+  const wantContacts = !skipContacts; // domyślnie pobieramy kontakty
 
   const input = {
     searchStringsArray: [String(query).trim()],
@@ -165,9 +166,9 @@ app.post("/api/scrape/start", async (req, res) => {
     maxCrawledPlacesPerSearch: max,
     language: "pl",
     countryCode: "pl",
-    scrapeContacts: true,        // <-- aktor odwiedza strony firm i wyciąga e-maile + social
+    scrapeContacts: wantContacts,   // <-- aktor odwiedza strony firm i wyciąga e-maile + social
     skipClosedPlaces: false,
-    maximumLeadsEnrichmentRecords: max,
+    maximumLeadsEnrichmentRecords: wantContacts ? max : 0,
   };
 
   try {

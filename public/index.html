@@ -52,6 +52,11 @@
           Uruchom scraping
         </button>
       </div>
+      <label class="toggle-row">
+        <input type="checkbox" id="skipContacts" />
+        <span class="toggle-track"><span class="toggle-thumb"></span></span>
+        <span class="toggle-label">Pomiń kontakty <em>— dużo szybciej, ale bez e-maili i social mediów ze stron firm</em></span>
+      </label>
     </section>
 
     <!-- POSTĘP -->
@@ -85,9 +90,22 @@
             <button class="vt" data-view="table" title="Tabela">▤</button>
           </div>
           <div class="exports">
+            <button class="btn btn-ghost btn-sm" id="historyBtn">Historia <span class="hist-count" id="histCount">0</span></button>
             <button class="btn btn-ghost btn-sm" id="exportCsv">CSV</button>
             <button class="btn btn-ghost btn-sm" id="exportJson">JSON</button>
           </div>
+        </div>
+      </div>
+
+      <!-- PASEK ZAZNACZEŃ (masowa analiza) -->
+      <div id="selectBar" class="select-bar glass hidden">
+        <label class="select-all">
+          <input type="checkbox" id="selectAll" /> Zaznacz wszystkie widoczne
+        </label>
+        <div class="select-actions">
+          <span id="selectCount">0</span> zaznaczonych
+          <button class="btn btn-primary btn-sm" id="bulkAnalyze">✦ Analizuj zaznaczone</button>
+          <button class="btn btn-ghost btn-sm" id="clearSelect">Wyczyść</button>
         </div>
       </div>
 
@@ -126,6 +144,32 @@
     <div class="drawer-panel glass">
       <button class="drawer-close" id="aiClose" type="button">✕</button>
       <div id="aiContent"></div>
+    </div>
+  </div>
+
+  <!-- DRAWER: HISTORIA OFERT -->
+  <div id="historyDrawer" class="drawer hidden">
+    <div class="drawer-panel glass">
+      <button class="drawer-close" id="historyClose" type="button">✕</button>
+      <div class="ai-head">
+        <h3>Historia ofert</h3>
+        <p id="historySub">Zapisane analizy AI</p>
+      </div>
+      <div id="historyList"></div>
+      <button class="btn btn-ghost btn-sm" id="clearHistory" style="margin-top:14px">Wyczyść historię</button>
+    </div>
+  </div>
+
+  <!-- OVERLAY: MASOWA ANALIZA -->
+  <div id="bulkModal" class="modal hidden">
+    <div class="modal-card glass">
+      <h3>Masowa analiza AI</h3>
+      <p class="muted" id="bulkStatus">Przygotowuję…</p>
+      <div class="progress-track" style="margin:16px 0"><div class="progress-bar" id="bulkBar"></div></div>
+      <p class="muted" id="bulkDetail"></p>
+      <div class="modal-actions">
+        <button class="btn btn-ghost" id="bulkCancel" type="button">Zatrzymaj</button>
+      </div>
     </div>
   </div>
 
